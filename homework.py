@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import requests
 from telebot import TeleBot
 
-from exceptions import ApiTelegramError
+from exceptions import ApiTelegramError, HTTPStatusError
 
 
 load_dotenv()
@@ -17,6 +17,27 @@ load_dotenv()
 PRACTICUM_TOKEN = os.getenv('YA_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TG_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TG_CHAT_ID')
+ENV_VARIABLES = [
+    'PRACTICUM_TOKEN',
+    'TELEGRAM_TOKEN',
+    'TELEGRAM_CHAT_ID'
+]
+
+ENV_ERROR = 'отсутствуют обязательные переменные окружения: {}'
+MESSAGE_HAS_SEND = 'сообщение "{}" отправлено пользователю'
+MESSAGE_HAS_NOT_SEND = 'сбой при отправке сообщения "{}": {}'
+PRACTICUM_CONNECTION_ERROR = 'ошибка при запросе к API Практикума: {}. {}'
+PARAMETERS = 'Параметры запроса: url={}, headers={}, params={}'
+INCORRECT_STATUS_CODE = 'некорректный статус ответа: {}'
+PRACTICUM_RETURN_ERROR = 'API Практикума вернул ошибку: {}. {}'
+INVALID_DATA_TYPE = 'ответ от сервера содержит неверный тип данных - {}'
+EMPTY_KEY_HOMEWORKS = 'В ответе от сервера отсутствует ключ "homeworks"'
+INVALID_HOMEWORKS_TYPE = 'Ключ "homeworks" содержит неверный тип данных - {}'
+EMPTY_STATUS = 'отсутствует поле "status" в ответе сервера'
+EMPTY_HOMEWORK_NAME = 'Отсутствует поле "homework_name" в ответе сервера'
+UNKNOWN_STATUS = 'неизвестный статус домашки: {}'
+STATUS_NOT_CHANGE = 'статус домашней работы не изменился'
+MAIN_ERROR = 'Cбой в работе программы: {}'
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
@@ -33,16 +54,9 @@ MESSAGE = 'Изменился статус проверки работы "{}". {
 
 def check_tokens():
     """Проверка существования обязательных переменных окружения."""
-    missing_vars = [name for name in [
-        'PRACTICUM_TOKEN',
-        'TELEGRAM_TOKEN',
-        'TELEGRAM_CHAT_ID'
-    ] if not globals()[name]]
+    missing_vars = [name for name in ENV_VARIABLES if not globals()[name]]
     if missing_vars:
-        error_massage = (
-            'отсутствуют обязательные переменные окружения: '
-            f'{", ".join(missing_vars)}'
-        )
+        error_massage = ENV_ERROR.format(missing_vars)
         logging.critical(error_massage)
         raise EnvironmentError(error_massage)
 
@@ -51,76 +65,57 @@ def send_message(bot: TeleBot, message: str):
     """Отправка сообщения пользователю Telegram."""
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        logging.debug(f'сообщение "{message}" отправлено пользователю')
-    except Exception as e:
-        raise ApiTelegramError(f'сбой при отправке сообщения "{message}": {e}')
+        logging.debug(MESSAGE_HAS_SEND.format(message))
+    except Exception as error:
+        raise ApiTelegramError(
+            MESSAGE_HAS_NOT_SEND.format(message, error)) from error
 
 
 def get_api_answer(from_date: int) -> Dict:
     """Получение ответа от API Практикума."""
     params = {'from_date': from_date}
+    params_message = PARAMETERS.format(ENDPOINT, HEADERS, params)
     try:
         response = requests.get(
             ENDPOINT, headers=HEADERS, params=params
         )
-        if response.status_code != HTTPStatus.OK:
-            raise requests.HTTPError(
-                f'некорректный статус ответа: {response.status_code}'
-            )
-    except requests.RequestException as e:
-        raise RuntimeError(
-            f'ошибка при запросе к API Практикума: {e}. '
-            f'Параметры запроса: url={ENDPOINT}, '
-            f'headers={HEADERS}, params={params}'
-        ) from e
-    try:
-        data = response.json()
-    except ValueError as e:
-        raise RuntimeError(
-            f'ошибка декодирования JSON из ответа: {e}. '
-            f'текст ответа: {response.text}. '
-            f'Параметры запроса: url={ENDPOINT}, '
-            f'headers={HEADERS}, params={params}'
-        ) from e
-    if 'code' in data or 'error' in data:
-        error_detail = data.get('code') or data.get('error')
-        raise RuntimeError(
-            f'API Практикума вернул ошибку: {error_detail}. '
-            f'Параметры запроса: url={ENDPOINT}, '
-            f'headers={HEADERS}, params={params}'
+    except requests.RequestException as error:
+        raise ConnectionError(
+            PRACTICUM_CONNECTION_ERROR.format(error, params_message)
+        ) from error
+    if response.status_code != HTTPStatus.OK:
+        raise HTTPStatusError(
+            f'{INCORRECT_STATUS_CODE.format(response.status_code)}'
+            f'{params_message}'
         )
+    data = response.json()
+    if 'code' in data or 'error' in data:
+        raise ValueError(PRACTICUM_RETURN_ERROR.format(data, params_message))
     return data
 
 
 def check_response(response: Dict) -> List[Dict]:
     """Проверка корректности ответа от API."""
     if not isinstance(response, dict):
-        raise TypeError(
-            'Ответ от сервера содержит неверный тип данных - '
-            f'{type(response)}'
-        )
+        raise TypeError(INVALID_DATA_TYPE.format(type(response)))
     if 'homeworks' not in response:
-        raise KeyError('В ответе от сервера отсутствует ключ "homeworks"')
+        raise KeyError(EMPTY_KEY_HOMEWORKS)
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
-        raise TypeError(
-            'Ключ "homeworks" содержит неверный тип данных - '
-            f'{type(homeworks)}'
-        )
+        raise TypeError(INVALID_HOMEWORKS_TYPE.format(type(homeworks)))
     return homeworks
 
 
 def parse_status(homework: Dict) -> str:
     """Извлечение статуса домашней работы."""
     if 'status' not in homework:
-        raise KeyError('Отсутствует поле "status" в ответе сервера')
+        raise KeyError(EMPTY_STATUS)
     if 'homework_name' not in homework:
-        raise KeyError('Отсутствует поле "homework_name" в ответе сервера')
-    name = homework['homework_name']
+        raise KeyError(EMPTY_HOMEWORK_NAME)
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(f'Неизвестный статус домашки: {status}')
-    return MESSAGE.format(name, HOMEWORK_VERDICTS[status])
+        raise ValueError(UNKNOWN_STATUS.format(status))
+    return MESSAGE.format(homework['homework_name'], HOMEWORK_VERDICTS[status])
 
 
 def main():
@@ -141,18 +136,18 @@ def main():
                 send_message(bot, message)
                 last_checked = response.get('current_date', last_checked)
             else:
-                logging.debug('Статус домашней работы не изменился')
+                logging.debug(STATUS_NOT_CHANGE)
         except ApiTelegramError as error:
             logging.error(error, exc_info=True)
         except Exception as error:
-            error_message = f'Сбой в работе программы: {error}'
+            error_message = MAIN_ERROR.format(error)
             logging.error(error_message)
             if error_message != old_error_message:
                 try:
                     send_message(bot, error_message)
                 except ApiTelegramError as error:
                     logging.error(error, exc_info=True)
-            old_error_message = error_message
+                old_error_message = error_message
         time.sleep(RETRY_PERIOD)
 
 
@@ -173,56 +168,3 @@ if __name__ == '__main__':
         ],
     )
     main()
-
-    # from unittest import TestCase, mock, main as uni_main
-    # ReqEx = requests.RequestException
-    # JSON_rejection = {'error': 'testing'}
-    # JSON_unexpected = {'homeworks': [{'homework_name': 'test',
-    #                                   'status': 'test'}]}
-    # JSON_invalid = {'homeworks': 1}
-
-    # class TestReq1(TestCase):
-    #     @mock.patch('requests.get')
-    #     def test_raised(self, rq_get):
-    #         rq_get.side_effect = mock.Mock(
-    #             side_effect=ReqEx('testing'))
-    #         main()
-
-    # class TestReq2(TestCase):
-    #     @mock.patch('requests.get')
-    #     def test_error(self, rq_get):
-    #         resp = mock.Mock()
-    #         resp.json = mock.Mock(
-    #             return_value=JSON_rejection)
-    #         resp.status_code = 200
-    #         rq_get.return_value = resp
-    #         main()
-
-    # class TestReq3(TestCase):
-    #     @mock.patch('requests.get')
-    #     def test_error(self, rq_get):
-    #         resp = mock.Mock()
-    #         resp.json = mock.Mock(
-    #             return_value=JSON_unexpected)
-    #         resp.status_code = 200
-    #         rq_get.return_value = resp
-    #         main()
-
-    # class TestReq4(TestCase):
-    #     @mock.patch('requests.get')
-    #     def test_error(self, rq_get):
-    #         resp = mock.Mock()
-    #         resp.json = mock.Mock(
-    #             return_value=JSON_invalid)
-    #         resp.status_code = 200
-    #         rq_get.return_value = resp
-    #         main()
-
-    # class TestReq5(TestCase):
-    #     @mock.patch('requests.get')
-    #     def test_error(self, rq_get):
-    #         resp = mock.Mock()
-    #         resp.status_code = 333
-    #         rq_get.return_value = resp
-    #         main()
-    # uni_main()
