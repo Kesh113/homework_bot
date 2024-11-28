@@ -9,8 +9,6 @@ from dotenv import load_dotenv
 import requests
 from telebot import TeleBot
 
-from exceptions import ApiTelegramError, HTTPStatusError
-
 
 load_dotenv()
 
@@ -67,7 +65,7 @@ def send_message(bot: TeleBot, message: str):
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         logging.debug(MESSAGE_HAS_SEND.format(message))
     except Exception as error:
-        raise ApiTelegramError(
+        raise RuntimeError(
             MESSAGE_HAS_NOT_SEND.format(message, error)) from error
 
 
@@ -84,13 +82,18 @@ def get_api_answer(from_date: int) -> Dict:
             PRACTICUM_CONNECTION_ERROR.format(error, params_message)
         ) from error
     if response.status_code != HTTPStatus.OK:
-        raise HTTPStatusError(
+        raise ValueError(
             f'{INCORRECT_STATUS_CODE.format(response.status_code)}'
             f'{params_message}'
         )
     data = response.json()
     if 'code' in data or 'error' in data:
-        raise ValueError(PRACTICUM_RETURN_ERROR.format(data, params_message))
+        error_details = [
+            {key: value} for key, value in data.items()
+            if key in ['code', 'error']
+        ]
+        raise ValueError(
+            PRACTICUM_RETURN_ERROR.format(error_details, params_message))
     return data
 
 
@@ -137,17 +140,17 @@ def main():
                 last_checked = response.get('current_date', last_checked)
             else:
                 logging.debug(STATUS_NOT_CHANGE)
-        except ApiTelegramError as error:
-            logging.error(error, exc_info=True)
+        except RuntimeError as error:
+            logging.error(MAIN_ERROR.format(error), exc_info=True)
         except Exception as error:
             error_message = MAIN_ERROR.format(error)
             logging.error(error_message)
             if error_message != old_error_message:
                 try:
                     send_message(bot, error_message)
-                except ApiTelegramError as error:
-                    logging.error(error, exc_info=True)
-                old_error_message = error_message
+                    old_error_message = error_message
+                except RuntimeError as error:
+                    logging.error(MAIN_ERROR.format(error), exc_info=True)
         time.sleep(RETRY_PERIOD)
 
 
